@@ -1,0 +1,10 @@
+ray==2.10.0
+sentence-transformers==2.2.2
+scikit-learn
+pyarrow
+mysql-connector-python
+numpy==1.24.4
+pandas==1.1.5
+python-dateutil==2.9.0
+pytz==2025.2
+six==1.17.0
