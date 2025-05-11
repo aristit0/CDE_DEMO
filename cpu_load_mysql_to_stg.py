@@ -20,10 +20,10 @@ properties = {
 df = spark.read.jdbc(
     url=jdbc_url,
     table="mobile_transactions",
-    column="transaction_id",  # numeric indexed column
+    column="transaction_id",    # Must be numeric & indexed
     lowerBound=1,
-    upperBound=10000000,
-    numPartitions=80,         # Adjust based on cores/executors in CDE
+    upperBound=1000000000,      # Total row estimate or max ID
+    numPartitions=80,           # Slightly more than total cores
     properties=properties
 )
 
