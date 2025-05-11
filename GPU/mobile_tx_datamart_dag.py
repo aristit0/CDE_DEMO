@@ -9,7 +9,7 @@ default_args = {
 }
 
 dag = DAG(
-    dag_id='mobile_tx_datamart_etl',
+    dag_id='gpu_mobile_tx_datamart_etl',
     default_args=default_args,
     start_date=timezone.utcnow(),
     schedule_interval='@once',
