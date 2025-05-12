@@ -1,31 +1,28 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, year, month, sum
-import ray
-import pandas as pd
 
+# Start Spark Session with Hive support
 spark = SparkSession.builder \
-    .appName("Transform to Datamart with Ray") \
+    .appName("RAPIDS GPU Aggregation") \
     .enableHiveSupport() \
     .getOrCreate()
 
-ray.init(num_gpus=2)
-
-@ray.remote(num_gpus=1)
-def aggregate_batch(batch: pd.DataFrame) -> pd.DataFrame:
-    batch['year'] = pd.to_datetime(batch['transaction_timestamp']).dt.year
-    batch['month'] = pd.to_datetime(batch['transaction_timestamp']).dt.month
-    return batch.groupby(['year', 'month', 'transaction_type', 'currency'])['amount'].sum().reset_index(name='total_amount')
-
-# Read from Hive
+# Read from Hive (written by gpu_ingest_mysql.py)
 df = spark.sql("SELECT * FROM stg.mobile_transactions_gpu")
 
-# Collect and batch in Pandas for Ray processing
-batches = [row.asDict() for row in df.collect()]
-futures = [aggregate_batch.remote(pd.DataFrame([batch])) for batch in batches]
-results = ray.get(futures)
-final_df = spark.createDataFrame(pd.concat(results))
+# RAPIDS limitation: cast timestamp to UTC-compatible format
+df = df.withColumn("ts", col("transaction_timestamp").cast("timestamp"))
 
-# Save to datamart
-final_df.write.mode("overwrite").format("parquet").saveAsTable("datamart.mobile_tx_summary_gpu")
+# GPU-accelerated transformation: monthly summary
+summary = df.withColumn("year", year("ts")) \
+            .withColumn("month", month("ts")) \
+            .groupBy("year", "month", "transaction_type", "currency") \
+            .agg(sum("amount").alias("total_amount"))
+
+# Optional: repartition before writing
+summary = summary.repartition(4)
+
+# Write aggregated data to datamart table
+summary.write.mode("overwrite").format("parquet").saveAsTable("datamart.gpu_tx_summary")
+
 spark.stop()
-ray.shutdown()

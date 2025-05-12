@@ -1,77 +1,60 @@
-from pyspark.sql import SparkSession
+import ray
 import pandas as pd
+from sqlalchemy import create_engine
+from pyspark.sql import SparkSession
 
-# Initialize Spark Session with Hive support
+# Initialize Ray with GPU support
+ray.init(num_gpus=2)
+
+# Define Ray task to fetch a batch from MySQL
+@ray.remote(num_gpus=1)
+def fetch_batch(offset, limit):
+    # SQLAlchemy connection to MySQL
+    engine = create_engine(
+        "mysql+pymysql://cloudera:Admin123@cdpm1.cloudeka.ai/transaction"
+    )
+
+    # Query batch of data
+    query = f"""
+        SELECT transaction_id, account_id, transaction_type,
+               amount, currency, status, transaction_timestamp
+        FROM mobile_transactions
+        LIMIT {limit} OFFSET {offset}
+    """
+
+    df = pd.read_sql(query, engine)
+
+    # Optional GPU processing here (e.g., NLP inference)
+    return df
+
+# Define batch settings
+batch_size = 500_000
+num_batches = 4  # Adjust based on total rows and GPU
+
+# Launch Ray tasks in parallel
+futures = [fetch_batch.remote(i * batch_size, batch_size) for i in range(num_batches)]
+results = ray.get(futures)
+
+# Combine all batches into one DataFrame
+combined_df = pd.concat(results, ignore_index=True)
+
+# Start Spark session
 spark = SparkSession.builder \
-    .appName("Load MySQL to Hive Staging with Ray Partition") \
+    .appName("Ingest MySQL with Ray") \
     .enableHiveSupport() \
     .getOrCreate()
 
-# JDBC Configuration
-jdbc_url = (
-    "jdbc:mysql://cdpm1.cloudeka.ai:3306/transaction"
-    "?useSSL=false"
-    "&serverTimezone=UTC"
-    "&connectionTimeZone=Asia/Jakarta"
-    "&autoReconnect=true"
-    "&socketTimeout=600000"
-    "&connectTimeout=30000"
-    "&interactiveClient=true"
-    "&tcpKeepAlive=true"
-)
+# Convert Pandas to Spark DataFrame
+spark_df = spark.createDataFrame(combined_df)
 
-properties = {
-    "user": "cloudera",
-    "password": "Admin123",
-    "driver": "com.mysql.cj.jdbc.Driver"
-}
-
-# Read from MySQL using partitioned parallel read
-df = spark.read.jdbc(
-    url=jdbc_url,
-    table="mobile_transactions",
-    column="transaction_id",
-    lowerBound=1,
-    upperBound=1000000000,
-    numPartitions=2,  # Adjust according to GPU count
-    properties=properties
-)
-
-# Define the partition-level GPU logic using Ray
-def ray_partition_processor(iterator):
-    import ray
-    import pandas as pd
-
-    data = list(iterator)
-    if not data:
-        return iter([])
-
-    df_batch = pd.DataFrame(data)
-
-    # Initialize Ray after JDBC read
-    ray.init(num_gpus=1, ignore_reinit_error=True)
-
-    @ray.remote(num_gpus=1)
-    def gpu_task(batch_df):
-        # Simulate GPU-based processing (e.g., embeddings, NLP, etc.)
-        return batch_df
-
-    future = gpu_task.remote(df_batch)
-    result_df = ray.get(future)
-
-    ray.shutdown()
-
-    # Return each row back to Spark
-    for row in result_df.itertuples(index=False, name=None):
-        yield row
-
-# Apply the GPU batch logic to each Spark partition
-processed_rdd = df.rdd.mapPartitions(ray_partition_processor)
-
-# Recreate DataFrame with original schema
-final_df = spark.createDataFrame(processed_rdd, schema=df.schema)
+# Optional: repartition for write optimization
+spark_df = spark_df.repartition(8)
 
 # Write to Hive staging table
-final_df.write.mode("overwrite").format("parquet").saveAsTable("stg.mobile_transactions_gpu")
+spark_df.write \
+    .mode("overwrite") \
+    .format("parquet") \
+    .saveAsTable("stg.mobile_transactions_gpu")
 
 spark.stop()
+ray.shutdown()

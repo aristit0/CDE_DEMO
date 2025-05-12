@@ -1,4 +1,4 @@
 ray==2.10.0
-pandas
+pandas==1.1.5
 sqlalchemy
 pymysql
