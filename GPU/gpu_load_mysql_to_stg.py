@@ -1,59 +1,42 @@
-import ray
-import pandas as pd
-from sqlalchemy import create_engine
 from pyspark.sql import SparkSession
 
-# Initialize Ray with GPU support
-ray.init(num_gpus=2)
-
-# Define Ray task to fetch a batch from MySQL
-@ray.remote(num_gpus=1)
-def fetch_batch(offset, limit):
-    from sqlalchemy import create_engine, text
-
-    # Recreate engine inside Ray worker
-    engine = create_engine("mysql+pymysql://cloudera:Admin123@cdpm1.cloudeka.ai/transaction")
-
-    # Use connection explicitly to avoid schema conflict
-    with engine.connect() as conn:
-        query = text(f"""
-            SELECT transaction_id, account_id, transaction_type,
-                   amount, currency, status, transaction_timestamp
-            FROM mobile_transactions
-            LIMIT {limit} OFFSET {offset}
-        """)
-        df = pd.read_sql(query, conn)
-
-    return df
-
-# Define batch settings
-batch_size = 500_000
-num_batches = 4  # Adjust based on total rows and GPU
-
-# Launch Ray tasks in parallel
-futures = [fetch_batch.remote(i * batch_size, batch_size) for i in range(num_batches)]
-results = ray.get(futures)
-
-# Combine all batches into one DataFrame
-combined_df = pd.concat(results, ignore_index=True)
-
-# Start Spark session
 spark = SparkSession.builder \
-    .appName("Ingest MySQL with Ray") \
+    .appName("Ingest MySQL to Hive (JDBC)") \
     .enableHiveSupport() \
     .getOrCreate()
 
-# Convert Pandas to Spark DataFrame
-spark_df = spark.createDataFrame(combined_df)
+jdbc_url = (
+    "jdbc:mysql://cdpm1.cloudeka.ai:3306/transaction"
+    "?useSSL=false"
+    "&serverTimezone=UTC"
+    "&connectionTimeZone=Asia/Jakarta"
+    "&autoReconnect=true"
+    "&socketTimeout=600000"
+    "&connectTimeout=30000"
+    "&interactiveClient=true"
+    "&tcpKeepAlive=true"
+)
 
-# Optional: repartition for write optimization
-spark_df = spark_df.repartition(8)
+properties = {
+    "user": "cloudera",
+    "password": "Admin123",
+    "driver": "com.mysql.cj.jdbc.Driver"
+}
 
-# Write to Hive staging table
-spark_df.write \
-    .mode("overwrite") \
+df = spark.read.jdbc(
+    url=jdbc_url,
+    table="mobile_transactions",
+    column="transaction_id",
+    lowerBound=1,
+    upperBound=1000000000,
+    numPartitions=2,
+    properties=properties
+)
+
+df = df.repartition(8)
+
+df.write.mode("overwrite") \
     .format("parquet") \
     .saveAsTable("stg.mobile_transactions_gpu")
 
 spark.stop()
-ray.shutdown()
