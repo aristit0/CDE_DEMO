@@ -9,22 +9,21 @@ ray.init(num_gpus=2)
 # Define Ray task to fetch a batch from MySQL
 @ray.remote(num_gpus=1)
 def fetch_batch(offset, limit):
-    # SQLAlchemy connection to MySQL
-    engine = create_engine(
-        "mysql+pymysql://cloudera:Admin123@cdpm1.cloudeka.ai/transaction"
-    )
+    from sqlalchemy import create_engine, text
 
-    # Query batch of data
-    query = f"""
-        SELECT transaction_id, account_id, transaction_type,
-               amount, currency, status, transaction_timestamp
-        FROM mobile_transactions
-        LIMIT {limit} OFFSET {offset}
-    """
+    # Recreate engine inside Ray worker
+    engine = create_engine("mysql+pymysql://cloudera:Admin123@cdpm1.cloudeka.ai/transaction")
 
-    df = pd.read_sql(query, engine)
+    # Use connection explicitly to avoid schema conflict
+    with engine.connect() as conn:
+        query = text(f"""
+            SELECT transaction_id, account_id, transaction_type,
+                   amount, currency, status, transaction_timestamp
+            FROM mobile_transactions
+            LIMIT {limit} OFFSET {offset}
+        """)
+        df = pd.read_sql(query, conn)
 
-    # Optional GPU processing here (e.g., NLP inference)
     return df
 
 # Define batch settings
