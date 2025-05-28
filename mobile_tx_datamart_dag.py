@@ -9,7 +9,7 @@ default_args = {
 }
 
 dag = DAG(
-    dag_id='mobile_tx_datamart_etl',
+    dag_id='mobile_transactions_job',
     default_args=default_args,
     start_date=timezone.utcnow(),
     schedule_interval='@once',
@@ -18,16 +18,16 @@ dag = DAG(
 )
 
 load_to_stg = CDEJobRunOperator(
-    task_id='lcpu_oad_mysql_to_stg',
+    task_id='mobile_transactions_stg',
     connection_id='cde_runtime_api',
-    job_name='cpu_load_mysql_to_stg',  # This should match your CDE job name
+    job_name='mobile_transactions_stg',  # This should match your CDE job name
     dag=dag
 )
 
 load_to_dm = CDEJobRunOperator(
-    task_id='cpu_stg_to_datamart',
+    task_id='mobile_transactions_mart',
     connection_id='cde_runtime_api',
-    job_name='cpu_stg_to_datamart',  # This should match your second job name
+    job_name='mobile_transactions_mart',  # This should match your second job name
     dag=dag
 )
 
